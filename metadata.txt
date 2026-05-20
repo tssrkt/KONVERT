@@ -1,0 +1,8 @@
+title=Название книги
+author=Имя Фамилия
+genre=fantasy
+lang=ru
+sequence=Цикл
+sequence_number=1
+annotation=Описание книги
+date=2026
