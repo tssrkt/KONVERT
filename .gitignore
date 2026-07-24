@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+book.normalized.docx
+book.fb2
+book.epub
+conversion-report.txt
