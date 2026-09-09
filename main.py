@@ -179,40 +179,204 @@ class DocxParser:
 
         result = []
 
-        for r in p.findall("w:r", NS):
+        field_active = False
+        field_display = False
+        field_instruction = []
+        field_href = None
+
+        for r in p.findall(".//w:r", NS):
+
+            hyperlink = self._ancestor(
+                r,
+                "hyperlink",
+                p
+            )
+
+            simple_field = self._ancestor(
+                r,
+                "fldSimple",
+                p
+            )
+
+            href = None
+
+            if hyperlink is not None:
+                href = self._hyperlink_target(
+                    hyperlink
+                )
+
+            elif simple_field is not None:
+                instruction = simple_field.attrib.get(
+                    f"{{{NS['w']}}}instr",
+                    ""
+                )
+
+                href = self._field_hyperlink(
+                    instruction
+                )
+
+            field_chars = r.findall(
+                ".//w:fldChar",
+                NS
+            )
+
+            for field_char in field_chars:
+
+                field_type = field_char.attrib.get(
+                    f"{{{NS['w']}}}fldCharType"
+                )
+
+                if field_type == "begin":
+                    field_active = True
+                    field_display = False
+                    field_instruction = []
+                    field_href = None
+
+                elif (
+                    field_type == "separate"
+                    and
+                    field_active
+                ):
+                    field_href = self._field_hyperlink(
+                        "".join(field_instruction)
+                    )
+                    field_display = True
+
+            if field_active and not field_display:
+
+                field_instruction.extend(
+                    node.text or ""
+                    for node in r.findall(
+                        ".//w:instrText",
+                        NS
+                    )
+                )
+
+            if (
+                href is None
+                and
+                field_active
+                and
+                field_display
+            ):
+                href = field_href
 
             text = "".join(
                 t.text or ""
                 for t in r.findall(".//w:t", NS)
             )
 
-            if not text:
-                continue
+            if text:
 
-            rpr = r.find("w:rPr", NS)
+                rpr = r.find("w:rPr", NS)
 
-            bold = False
-            italic = False
+                bold = False
+                italic = False
 
-            if rpr is not None:
+                if rpr is not None:
 
-                bold = (
-                    rpr.find("w:b", NS)
-                    is not None
-                )
+                    bold = (
+                        rpr.find("w:b", NS)
+                        is not None
+                    )
 
-                italic = (
-                    rpr.find("w:i", NS)
-                    is not None
-                )
+                    italic = (
+                        rpr.find("w:i", NS)
+                        is not None
+                    )
 
-            result.append({
-                "text": text,
-                "bold": bold,
-                "italic": italic,
-            })
+                result.append({
+                    "text": text,
+                    "bold": bold,
+                    "italic": italic,
+                    "href": href,
+                })
+
+            if any(
+                field_char.attrib.get(
+                    f"{{{NS['w']}}}fldCharType"
+                ) == "end"
+                for field_char in field_chars
+            ):
+                field_active = False
+                field_display = False
+                field_instruction = []
+                field_href = None
 
         return result
+
+    # -----------------------------------------------------
+
+    def _ancestor(self, element, name, stop):
+
+        parent = element.getparent()
+
+        while parent is not None and parent is not stop:
+
+            if etree.QName(parent).localname == name:
+                return parent
+
+            parent = parent.getparent()
+
+        return None
+
+    # -----------------------------------------------------
+
+    def _hyperlink_target(self, hyperlink):
+
+        rid = hyperlink.attrib.get(
+            f"{{{NS['r']}}}id"
+        )
+
+        if rid:
+
+            target = self.relationships.get(rid)
+
+            if target:
+                return target
+
+        anchor = hyperlink.attrib.get(
+            f"{{{NS['w']}}}anchor"
+        )
+
+        if anchor:
+            return f"#{anchor}"
+
+        return None
+
+    # -----------------------------------------------------
+
+    def _field_hyperlink(self, instruction):
+
+        if not instruction:
+            return None
+
+        if not re.search(
+            r"\bHYPERLINK\b",
+            instruction,
+            re.IGNORECASE
+        ):
+            return None
+
+        bookmark = re.search(
+            r'\\l\s+"([^"]+)"',
+            instruction,
+            re.IGNORECASE
+        )
+
+        if bookmark:
+            return f"#{bookmark.group(1)}"
+
+        target = re.search(
+            r'\bHYPERLINK\s+(?:"([^"]+)"|(\S+))',
+            instruction,
+            re.IGNORECASE
+        )
+
+        if not target:
+            return None
+
+        return target.group(1) or target.group(2)
 
     # -----------------------------------------------------
 
@@ -597,6 +761,30 @@ class FB2Builder:
             bold = run["bold"]
             italic = run["italic"]
 
+            href = run.get("href")
+
+            run_parent = parent
+
+            if href:
+
+                run_parent = etree.SubElement(
+                    parent,
+                    "a"
+                )
+
+                run_parent.attrib[
+                    f"{{{XLINK_NS}}}href"
+                ] = href
+
+                self._append_formatted(
+                    run_parent,
+                    text,
+                    bold,
+                    italic
+                )
+
+                continue
+
             pos = 0
 
             for m in self.NOTE_RE.finditer(text):
@@ -610,14 +798,14 @@ class FB2Builder:
                 if before:
 
                     self._append_formatted(
-                        parent,
+                        run_parent,
                         before,
                         bold,
                         italic
                     )
 
                 note_link = etree.SubElement(
-                    parent,
+                    run_parent,
                     "a"
                 )
 
@@ -636,7 +824,7 @@ class FB2Builder:
             if remain:
 
                 self._append_formatted(
-                    parent,
+                    run_parent,
                     remain,
                     bold,
                     italic
